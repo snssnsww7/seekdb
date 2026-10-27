@@ -1,0 +1,65 @@
+# owner group: storage
+# tags: fts
+# description: IK classification/dispatch and BENG normalization buffer regression.
+
+--disable_query_log
+set names utf8mb4;
+set ob_query_timeout = 1000000000;
+
+# Compare complete token sets and frequencies without depending on hash iteration order.
+--echo IK smart and max_word
+set @actual = tokenize('中华人民共和国人民大会堂', 'ik', '[{"additional_args":[{"ik_mode":"smart"}]}]');
+set @expected = '["人民大会堂","中华人民共和国"]';
+select json_contains(@actual, @expected) and json_contains(@expected, @actual) as ok;
+set @actual = tokenize('中华人民共和国人民大会堂', 'ik', '[{"additional_args":[{"ik_mode":"max_word"}]}]');
+set @expected = '["大会","人民大会堂","大会堂","共和国","人民大会","人民共和国","中华人民","共和","会堂","中华","中华人民共和国","国人","华人","人民"]';
+select json_contains(@actual, @expected) and json_contains(@expected, @actual) as ok;
+
+--echo IK character classes and batch boundary
+set @actual = tokenize('AbC 123 中 あ 한 ＡＢ １２ 😀', 'ik');
+set @expected = '["abc","123","中","あ","한","ａｂ","１２"]';
+select json_contains(@actual, @expected) and json_contains(@expected, @actual) as ok;
+set @actual = tokenize(repeat('AbC 123 😀 ', 130), 'ik', '[{"output":"all"}]');
+set @expected = '{"tokens":[{"abc":130},{"123":130}],"doc_len":260}';
+select json_contains(@actual, @expected) and json_contains(@expected, @actual) as ok;
+select json_length(tokenize(' ,.!😀', 'ik')) = 0 as ok;
+
+--echo BENG buffer growth, shorter tokens and repeated words
+set @actual = tokenize('CAT abcdefghijklmnopqrstuvwxyz DOG cat', 'beng', '[{"output":"all"}]');
+set @expected = '{"tokens":[{"cat":2},{"abcdefghijklmnopqrstuvwxyz":1},{"dog":1}],"doc_len":4}';
+select json_contains(@actual, @expected) and json_contains(@expected, @actual) as ok;
+set @actual = tokenize('CATÉDOG catédog', 'beng', '[{"output":"all"}]');
+set @expected = '{"tokens":[{"catédog":2}],"doc_len":2}';
+select json_contains(@actual, @expected) and json_contains(@expected, @actual) as ok;
+# An overlong token is normalized before the existing length filter rejects it.
+set @actual = tokenize(concat('CAT ', repeat('A', 256), ' DOG cat'), 'beng', '[{"output":"all"}]');
+set @expected = '{"tokens":[{"cat":2},{"dog":1}],"doc_len":3}';
+select json_contains(@actual, @expected) and json_contains(@expected, @actual) as ok;
+set @actual = tokenize(repeat('CAT DOG ', 100), 'beng', '[{"output":"all"}]');
+set @expected = '{"tokens":[{"cat":100},{"dog":100}],"doc_len":200}';
+select json_contains(@actual, @expected) and json_contains(@expected, @actual) as ok;
+select json_length(tokenize(' ,.!', 'beng')) = 0 as ok;
+
+--echo Offline index construction and online insertion
+--disable_warnings
+drop table if exists fts_hotpath;
+--enable_warnings
+create table fts_hotpath(id int primary key, cn text, en text) charset utf8mb4;
+insert into fts_hotpath values
+  (1, '人际关系 CAT', 'CAT abcdefghijklmnopqrstuvwxyz DOG'),
+  (2, '中华人民共和国人民大会堂', 'CAT DOG'),
+  (3, '音乐', 'MUSIC');
+create fulltext index fts_cn on fts_hotpath(cn) with parser ik;
+create fulltext index fts_en on fts_hotpath(en) with parser beng;
+insert into fts_hotpath values (4, '人际关系', 'DOG');
+select id from fts_hotpath where match(cn) against('人际关系') order by id;
+select id from fts_hotpath where match(en) against('cAt') order by id;
+select id from fts_hotpath where match(cn) against('人际关系 CAT') order by id limit 1;
+
+--echo Index maintenance
+update fts_hotpath set cn = '音乐', en = 'MUSIC' where id = 1;
+delete from fts_hotpath where id = 2;
+select id from fts_hotpath where match(cn) against('人际关系') order by id;
+select id from fts_hotpath where match(en) against('DOG') order by id;
+drop table fts_hotpath;
+--enable_query_log

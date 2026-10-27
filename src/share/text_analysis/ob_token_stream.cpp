@@ -220,19 +220,22 @@ int ObTokenStopWordNormalizer::filter_special_marks(const ObDatum &check_token, 
 
 ObBasicEnglishNormalizer::ObBasicEnglishNormalizer()
   : ObTokenNormalizer(),
-    norm_allocator_("TxtTokGrpFilter", OB_MALLOC_NORMAL_BLOCK_SIZE)
+    norm_allocator_("TxtTokGrpFilter", OB_MALLOC_NORMAL_BLOCK_SIZE),
+    norm_buf_(nullptr),
+    norm_buf_capacity_(0)
 {
 }
 
 void ObBasicEnglishNormalizer::reset()
 {
   norm_allocator_.reset();
+  norm_buf_ = nullptr;
+  norm_buf_capacity_ = 0;
   ObTokenNormalizer::reset();
 }
 
 void ObBasicEnglishNormalizer::reuse()
 {
-  norm_allocator_.reuse();
   ObTokenNormalizer::reuse();
 }
 
@@ -244,7 +247,6 @@ int ObBasicEnglishNormalizer::get_next(ObDatum &next_token, int64_t &token_freq)
   } else {
     next_token.reset();
     token_freq = 0;
-    norm_allocator_.reuse();
     ObDatum tmp_datum;
     bool found_alnum = false;
     uint32_t norm_token_len = 0;
@@ -293,11 +295,31 @@ int ObBasicEnglishNormalizer::get_next(ObDatum &next_token, int64_t &token_freq)
     } else if (OB_UNLIKELY(!found_alnum)) {
       ret = OB_ERR_UNEXPECTED;
     } else {
-      ObString norm_alnum_token(norm_token_len, norm_token_ptr);
-      ObString norm_lower_token;
-      if (OB_FAIL(ObCharset::tolower(cs_, norm_alnum_token, norm_lower_token, norm_allocator_))) {
-      } else {
-        next_token.set_string(norm_lower_token);
+      const int64_t buf_len = static_cast<int64_t>(norm_token_len) * cs_->casedn_multiply;
+      if (buf_len > norm_buf_capacity_) {
+        // Only the current token is exposed by this stream. Release the old
+        // buffer before growing so memory stays bounded by the largest token.
+        norm_allocator_.reuse();
+        norm_buf_ = nullptr;
+        norm_buf_capacity_ = 0;
+        if (OB_ISNULL(norm_buf_ = static_cast<char *>(norm_allocator_.alloc(buf_len)))) {
+          ret = OB_ALLOCATE_MEMORY_FAILED;
+        } else {
+          norm_buf_capacity_ = buf_len;
+        }
+      }
+      if (OB_SUCC(ret)) {
+        size_t size = 0;
+        // Match ObCharset::tolower: single-width case mappings work in place;
+        // expanding mappings receive separate source and destination buffers.
+        if (1 == cs_->casedn_multiply) {
+          MEMCPY(norm_buf_, norm_token_ptr, norm_token_len);
+          size = cs_->cset->casedn(cs_, norm_buf_, norm_token_len, norm_buf_, norm_token_len);
+        } else {
+          size = cs_->cset->casedn(cs_, const_cast<char *>(norm_token_ptr), norm_token_len,
+                                 norm_buf_, buf_len);
+        }
+        next_token.set_string(norm_buf_, static_cast<uint32_t>(size));
       }
     }
   }

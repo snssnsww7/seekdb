@@ -1,0 +1,37 @@
+IK smart and max_word
+ok
+1
+ok
+1
+IK character classes and batch boundary
+ok
+1
+ok
+1
+ok
+1
+BENG buffer growth, shorter tokens and repeated words
+ok
+1
+ok
+1
+ok
+1
+ok
+1
+ok
+1
+Offline index construction and online insertion
+id
+1
+4
+id
+1
+2
+id
+1
+Index maintenance
+id
+4
+id
+4
